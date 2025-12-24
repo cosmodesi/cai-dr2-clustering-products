@@ -10,13 +10,13 @@ source /global/common/software/desi/users/adematti/cosmodesi_environment.sh test
 #DA2/mocks/SecondGenMocks/AbacusSummit/desipipe/v4_1/altmtl/2pt/mock0/
 #/dvs_ro/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/desipipe/holi_v1/altmtl/2pt/mock{i}/
 INPUT_DIR=/dvs_ro/cfs/cdirs/desi/mocks/cai/LSS/DA2/mocks/holi_v1/
-OUTPUT_DIR=$PSCRATCH/checks4/
+OUTPUT_DIR=$PSCRATCH/checks4/checks1/
 CODE=jax-pkrun.py
 
 TRACER=$1
 
 #list=({451..500} {601..650})
-list=({451..452})
+list=({451..451})
 length=${#list[@]}
 
 N=$SLURM_NNODES
@@ -38,7 +38,7 @@ NRAN_QSO=10
 
 
 COMMON_FLAGS="--todo mesh2_spectrum combine --region NGC SGC --cellsize 10" 
-if [ $TRACER == 'ELG' ]; then
+if [ $TRACER == 'ELG_LOPnotqso' ]; then
     TRACER_FLAGS="--tracer $TRACER --boxsize $BOXSIZE_ELG --nran $NRAN_ELG --zrange 0.8 1.1 1.1 1.6 --weight_type default_FKP"   
 fi
 

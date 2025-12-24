@@ -69,7 +69,8 @@ def compute_jaxpower_mesh2_spectrum(output_fn, get_data, get_randoms, get_data_2
         spectrum.write(output_fn)
     jax.block_until_ready(spectrum)
     #logger.info(f'Elapsed time: {time.time() - t0:.2f}.')
-    return spectrum, bin
+    del spectrum, bin
+    #return spectrum, bin
 
 
 def compute_jaxpower_window_mesh2_spectrum(output_fn, get_randoms, get_data=None, spectrum_fn=None, kind='smooth', **kwargs):
