@@ -10,8 +10,8 @@ from pathlib import Path
 import jax
 
 import tools
+from tools import setup_logging
 from compute_fiducial_stats import compute_fiducial_stats_from_options
-from jaxpower import setup_logging
 
 
 def check_boxsize(stats=['mesh2_spectrum']):

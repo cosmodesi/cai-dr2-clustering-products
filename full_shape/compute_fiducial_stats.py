@@ -7,6 +7,7 @@ import numpy as np
 import lsstypes as types
 
 import tools
+from tools import setup_logging
 from correlation2_tools import compute_angular_upweights, compute_particle2_correlation
 from spectrum2_tools import prepare_jaxpower_particles, compute_mesh2_spectrum
 from spectrum3_tools import compute_mesh3_spectrum
@@ -199,6 +200,8 @@ def main(**kwargs):
         os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.9'
         import jax
         jax.distributed.initialize()
+
+    setup_logging()
     tracer = args.tracer
     if args.zrange is None:
         zranges = tools.propose_fiducial('zranges', tracer)
@@ -226,9 +229,11 @@ def main(**kwargs):
                 compute_fiducial_stats_from_options(args.stats,
                                                                  get_measurement_fn=get_measurement_fn,
                                                                  cache=cache, **_kwargs)
+                jax.experimental.multihost_utils.sync_global_devices('measurements')
             if args.combine:
-                for region_comb, regions in tools.possible_combine_regions(args.region).items():
-                    combine_fiducial_stats_from_options(args.stats, region_comb, regions, get_measurement_fn=get_measurement_fn, **kwargs)
+                if jax.process_index() == 0:
+                    for region_comb, regions in tools.possible_combine_regions(args.region).items():
+                        combine_fiducial_stats_from_options(args.stats, region_comb, regions, get_measurement_fn=get_measurement_fn, **kwargs)
     if args.stats:
         jax.distributed.shutdown()
 
