@@ -3,7 +3,7 @@ import logging
 import numpy as np
 import jax
 
-from tools import default_mpicomm
+from tools import default_mpicomm, _format_bitweights
 
 
 logger = logging.getLogger('spectrum2')
@@ -38,15 +38,28 @@ def prepare_jaxpower_particles(*get_data_randoms, mattrs=None, **kwargs):
 
     all_particles = []
     for i, (data, randoms) in enumerate(zip(all_data, all_randoms)):
-        data = ParticleField(data['POSITION'], data['INDWEIGHT'], attrs=mattrs, exchange=True, backend=backend, **kwargs)
-        ids = collective_arange(len(randoms['POSITION']))
+        indweights, bitweights = data['INDWEIGHT'], None
+        if 'BITWEIGHT' in data:
+            bitweights = _format_bitweights(data['BITWEIGHT'])
+            from cucount.jax import BitwiseWeight
+            iip = BitwiseWeight(weights=bitweights, p_correction_nbits=False)(bitweights)
+            bitweights = [indweights] + bitweights  # add individual weight (photometric, spectro systematics) without PIP
+            indweights = indweights * iip  # multiply by IIP to correct fiber assignment at large scales
+        data = ParticleField(data['POSITION'], indweights, attrs=mattrs, exchange=True, backend=backend, **kwargs)
+        #ids = collective_arange(len(randoms['POSITION']))
+        ids = randoms['TARGETID']
         randoms = ParticleField(randoms['POSITION'], randoms['INDWEIGHT'], attrs=mattrs, exchange=True, backend=backend, **kwargs)
         if backend == 'jax':  # first convert to JAX Array
             sharding_mesh = mattrs.sharding_mesh
             ids = make_array_from_process_local_data(ids, pad=-1, sharding_mesh=sharding_mesh)
+            if bitweights is not None:
+                bitweights = [make_array_from_process_local_data(bitweight, pad=0, sharding_mesh=sharding_mesh) for bitweight in bitweights]
         randoms.__dict__['ids'] = randoms.exchange_direct(ids, pad=-1)  # index in the input catalog; for random split in bispectrum normalization
+        if bitweights is not None:
+            data.__dict__['BITWEIGHT'] = [data.exchange_direct(bitweight, pad=0) for bitweight in bitweights]
         if all_shifted:
-            shifted = ParticleField(*shifted, attrs=mattrs, exchange=True, backend=backend, **kwargs)
+            shifted = all_shifted[i]
+            shifted = ParticleField(shifted['POSITION'], shifted['INDWEIGHT'], attrs=mattrs, exchange=True, backend=backend, **kwargs)
         else:
             shifted = None
         all_particles.append((data, randoms, shifted))
@@ -109,12 +122,25 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
         close = close.to_spectrum(bin.xavg)
         results['cut'] = -close.value()
 
-    if auw is not None:
+    with_bitweights = 'BITWEIGHT' in all_fkp[0].data.__dict__
+    if auw is not None or with_bitweights:
         from cucount.jax import WeightAttrs
         from jaxpower.particle2 import convert_particles
         sattrs = {'theta': (0., 0.1)}
-        all_data = [convert_particles(fkp.data, weights=[fkp.data.weights] * 2, exchange_weights=False, index_value=dict(individual_weight=1, negative_weight=1)) for fkp in all_fkp]
-        wattrs = WeightAttrs(angular=dict(sep=auw.get('DD').coords('theta'), weight=auw.get('DD').value()) if auw is not None else None)
+        bitwise = None
+        if with_bitweights:
+            # Order of weights matters
+            # fkp.data.__dict__['BITWEIGHT'] includes IIP in the first position 
+            all_data = [convert_particles(fkp.data, weights=list(fkp.data.__dict__['BITWEIGHT']) + [fkp.data.weights], exchange_weights=False) for fkp in all_fkp]
+            bitwise = dict(weights=all_data[0].get('bitwise_weight'))  # sets nrealizations, etc.: fine to use the first
+            if jax.process_index() == 0:
+                logger.info(f'Applying PIP weights {bitwise}.')
+        else:
+            all_data = [convert_particles(fkp.data, weights=[fkp.data.weights] * 2, exchange_weights=False, index_value=dict(individual_weight=1, negative_weight=1)) for fkp in all_fkp]
+            if jax.process_index() == 0:
+                logger.info(f'Applying AUW weights.')
+        wattrs = WeightAttrs(bitwise=bitwise,
+                             angular=dict(sep=auw.get('DD').coords('theta'), weight=auw.get('DD').value()) if auw is not None else None)
         pbin = BinParticle2SpectrumPoles(mattrs, edges=bin.edges, xavg=bin.xavg, sattrs=sattrs, wattrs=wattrs, ells=ells)
         DD = compute_particle2(*all_data, bin=pbin, los=los)
         DD = DD.clone(num_shotnoise=compute_particle2_shotnoise(*all_data, bin=pbin), norm=norm)

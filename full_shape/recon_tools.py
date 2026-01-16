@@ -13,7 +13,7 @@ def compute_reconstruction(get_data_randoms, mattrs=None, mode='recsym', bias=2.
     from jaxpower import FKPField
     from jaxrecon.zeldovich import IterativeFFTReconstruction, estimate_particle_delta
 
-    particles = prepare_jaxpower_particles(get_data_randoms, mattrs=mattrs)[0]
+    particles = prepare_jaxpower_particles(get_data_randoms, mattrs=mattrs, return_inverse=True)[0]
 
     # Define FKP field = data - randoms
     fkp = FKPField(*particles)

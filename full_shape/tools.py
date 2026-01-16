@@ -96,19 +96,29 @@ def select_region(ra, dec, region=None):
     raise ValueError('unknown region {}'.format(region))
 
 
-def propose_fiducial(kind, tracer):
-    cellsize = 7.8
-    base = {'particle2_correlation': {}, 'mesh2_spectrum': {}, 'mesh3_spectrum': {}}
-    for name in list(base):
-        base[f'recon_{name}'] = base[name]  # same for post-recon measurements
+def propose_fiducial(kind, tracer, zrange=None):
+    from jaxpower import get_mesh_attrs
+    base = {'catalog': {'weight_type': 'default_FKP'}, 'particle2_correlation': {}, 'mesh2_spectrum': {}, 'mesh3_spectrum': {}}
     propose_fiducial = {
-        'BGS': base | {'zranges': [(0.1, 0.4)], 'mattrs': dict(boxsize=4000., cellsize=cellsize), 'nran': 2, 'recon': dict(bias=1.5, smoothing_radius=15.)},
-        'LRG+ELG': base | {'zranges': [(0.8, 1.1)], 'mattrs': dict(boxsize=9000., cellsize=cellsize), 'nran': 13, 'recon': dict(bias=1.6, smoothing_radius=15.)},
-        'LRG': base | {'zranges': [(0.4, 0.6), (0.6, 0.8), (0.8, 1.1)], 'mattrs': dict(boxsize=7000., cellsize=cellsize), 'nran': 9, 'recon': dict(bias=2.0, smoothing_radius=15.)},
-        'ELG': base | {'zranges': [(0.8, 1.1), (1.1, 1.6)], 'mattrs': dict(boxsize=9000., cellsize=cellsize), 'nran': 13, 'recon': dict(bias=1.2, smoothing_radius=15.)},
-        'QSO': base | {'zranges': [(0.8, 2.1)], 'mattrs': dict(boxsize=10000., cellsize=cellsize), 'nran': 4, 'recon': dict(bias=2.1, smoothing_radius=30.)}
+        'BGS': {'zranges': [(0.1, 0.4)], 'nran': 3, 'recon': {'bias': 1.5, 'smoothing_radius': 15., 'zrange': (0.1, 0.4)}},
+        'LRG+ELG': {'zranges': [(0.8, 1.1)], 'nran': 13, 'recon': {'bias': 1.6, 'smoothing_radius': 15.}, 'zrange': (0.8, 1.1)},
+        'LRG': {'zranges': [(0.4, 0.6), (0.6, 0.8), (0.8, 1.1)], 'nran': 10, 'recon': {'bias': 2.0, 'smoothing_radius': 15., 'zrange': (0.4, 1.1)}},
+        'ELG': {'zranges': [(0.8, 1.1), (1.1, 1.6)], 'nran': 15, 'recon': {'bias': 1.2, 'smoothing_radius': 15., 'zrange': (0.8, 1.6)}},
+        'QSO': {'zranges': [(0.8, 2.1)], 'nran': 4, 'recon': {'bias': 2.1, 'smoothing_radius': 30., 'zrange': (0.8, 2.1)}}
     }
-    return propose_fiducial[get_simple_tracer(tracer)][kind]
+    tracer = get_simple_tracer(tracer)
+    propose_fiducial = base | propose_fiducial[tracer]
+    propose_meshsizes = {'BGS': 750, 'LRG': 750, 'ELG': 960, 'LRG+ELG': 750, 'QSO': 1152}
+    propose_cellsize = 7.5
+    for stat in ['mesh2_spectrum', 'mesh3_spectrum']:
+        propose_fiducial[stat]['mattrs'] = {'meshsize': propose_meshsizes[tracer], 'cellsize': propose_cellsize}
+    for stat in ['recon']:
+        recon_cellsize = propose_fiducial[stat]['smoothing_radius'] / 3.
+        primes, divisors = (2, 3, 5), (2,)
+        propose_fiducial[stat]['mattrs'] = {'boxpad': 1.2, 'cellsize': recon_cellsize, 'primes': primes, 'divisors': divisors}
+    for name in list(propose_fiducial):
+        propose_fiducial[f'recon_{name}'] = propose_fiducial[name]  # same for post-recon measurements
+    return propose_fiducial[kind]
 
 
 def get_catalog_dir(survey='Y1', verspec='iron', version='v1.2', base_dir=desi_dir / 'survey/catalogs'):
@@ -168,9 +178,8 @@ def get_catalog_fn(version=None, cat_dir=None, kind='data', tracer='LRG',
         return [cat_dir / f'{tracer}_{iran:d}_full_HPmapcut.ran.{ext}' for iran in range(nran)]
 
 
-
 def get_measurement_fn(meas_dir=Path(os.getenv('SCRATCH')) / 'measurements', version=None, kind='mesh2_spectrum', recon=None,
-                       tracer='LRG', region='NGC', zrange=(0.8, 1.1), auw=None, cut=None, weight_type='default', imock=None, extra='', ext='h5', **kwargs):
+                       tracer='LRG', region='NGC', zrange=(0.8, 1.1), auw=None, cut=None, weight_type='default_FKP', imock=None, extra='', ext='h5', **kwargs):
     if imock == '*':
         fns = [get_measurement_fn(meas_dir=meas_dir, kind=kind, version=version, recon=recon, tracer=tracer, region=region, zrange=zrange, auw=auw, cut=cut, weight_type=weight_type, imock=imock, ext=ext, **kwargs) for imock in range(1000)]
         return [fn for fn in fns if os.path.exists(fn)]
@@ -183,17 +192,24 @@ def get_measurement_fn(meas_dir=Path(os.getenv('SCRATCH')) / 'measurements', ver
         meas_dir = meas_dir / version
     if recon:
         meas_dir = meas_dir / recon
-    if imock is None: imock = ''
-    else: imock = f'_{imock:d}'
-    if extra: extra = f'_{extra}'
+    if imock is None:
+        imock = ''
+    else:
+        imock = f'_{imock:d}'
+    if extra:
+        extra = f'_{extra}'
     tracer = join_tracers(tracer)
+    if zrange is not None:
+        zrange = f'_z{zrange[0]:.1f}-{zrange[1]:.1f}'
+    else:
+        zrange = ''
     corr_type = 'smu'
     battrs = kwargs.get('battrs', None)
     if battrs is not None: corr_type = ''.join(list(battrs))
     kind = {'mesh2_spectrum': 'mesh2_spectrum_poles',
             'mesh3_spectrum': 'mesh3_spectrum_poles',
             'particle2_correlation': f'particle2_correlation_{corr_type}'}.get(kind, kind)
-    basename = f'{kind}_{tracer}_z{zrange[0]:.1f}-{zrange[1]:.1f}_{region}_{weight_type}{auw}{cut}{extra}{imock}.{ext}'
+    basename = f'{kind}_{tracer}{zrange}_{region}_{weight_type}{auw}{cut}{extra}{imock}.{ext}'
     return meas_dir / basename
 
 
@@ -306,12 +322,13 @@ def get_positions_from_rdz(catalog):
 
 
 @default_mpicomm
-def read_clustering_catalog(*fns, kind=None, zrange=None, region=None, weight_type='default', ntmp=None, concatenate=True,
+def read_clustering_catalog(*fns, kind=None, zrange=None, region=None, weight_type='default_FKP', ntmp=None, concatenate=True,
                             get_positions_from_rdz=get_positions_from_rdz, mpicomm=None, **kwargs):
 
+    assert kind in ['data', 'randoms'], 'provide kind'
     exists = {os.path.exists(fn): fn for fn in fns}
     if not all(exists):
-        raise IOError('Catalogs {[fn for ex, fn in exists.items() if not ex]} do not exist!')
+        raise IOError(f'Catalogs {[fn for ex, fn in exists.items() if not ex]} do not exist!')
 
     catalogs = [None] * len(fns)
     for ifn, fn in enumerate(fns):
@@ -319,11 +336,11 @@ def read_clustering_catalog(*fns, kind=None, zrange=None, region=None, weight_ty
         catalogs[ifn] = (irank, None)
         if mpicomm.rank == irank:  # Faster to read catalogs from one rank
             catalog = _read_catalog(fn, mpicomm=MPI.COMM_SELF)
-            columns = ['RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_SYS', 'WEIGHT_ZFAIL', 'WEIGHT_COMP', 'WEIGHT_FKP', 'BITWEIGHTS', 'FRAC_TLOBS_TILES', 'NTILE', 'NX']
+            columns = ['RA', 'DEC', 'Z', 'WEIGHT', 'WEIGHT_SYS', 'WEIGHT_ZFAIL', 'WEIGHT_COMP', 'WEIGHT_FKP', 'BITWEIGHTS', 'FRAC_TLOBS_TILES', 'NTILE', 'NX', 'TARGETID']
             columns = [col for col in columns if col in catalog.columns()]
             catalog = catalog[columns]
             if zrange is not None:
-                mask = (catalog['Z'] >= zrange[0]) & (catalog['Z'] <= zrange[1])
+                mask = (catalog['Z'] >= zrange[0]) & (catalog['Z'] < zrange[1])
                 catalog = catalog[mask]
             if 'bitwise' in weight_type:
                 mask = (catalog['FRAC_TLOBS_TILES'] != 0)
@@ -347,10 +364,13 @@ def read_clustering_catalog(*fns, kind=None, zrange=None, region=None, weight_ty
                 individual_weight = catalog['WEIGHT'] * apply_wntmp(catalog['NTILE'], ntmp)
         if 'FKP' in weight_type.upper():
             individual_weight *= catalog['WEIGHT_FKP']
-        catalog = catalog[['RA', 'DEC', 'Z', 'NX']]
+        catalog = catalog[['RA', 'DEC', 'Z', 'NX', 'TARGETID']]
         catalog['INDWEIGHT'] = individual_weight
-        for column in catalog: catalog[column] = catalog[column].astype('f8')
-        if bitwise_weights is not None: catalog['BITWEIGHT'] = bitwise_weights
+        for column in catalog:
+            if not np.issubdtype(catalog[column].dtype, np.integer):
+                catalog[column] = catalog[column].astype('f8')
+        if bitwise_weights is not None:
+            catalog['BITWEIGHT'] = bitwise_weights
         catalog = get_positions_from_rdz(catalog)
         rdzw.append(catalog)
     if concatenate:
@@ -446,7 +466,7 @@ def compute_fkp_effective_redshift(*fkps, cellsize=10., order=2, split=None, fun
     zmax, nz = 100., 512
     zgrid = 1. / np.geomspace(1. / (1. + zmax), 1., nz)[::-1] - 1.
     rgrid = fiducial.comoving_radial_distance(zgrid)
-    d2z = Interpolator1D(jnp.array(rgrid), jnp.array(func_of_z(zgrid)), k=3)
+    d2z = Interpolator1D(jnp.array(rgrid), jnp.array(func_of_z(zgrid)), k=1)  #FIXME k = 1, otherwise memory error
 
     fkps_none =  list(fkps) + [None] * (order - len(fkps))
 
@@ -459,9 +479,9 @@ def compute_fkp_effective_redshift(*fkps, cellsize=10., order=2, split=None, fun
         if split is not None:
             particles = split_particles(*particles, seed=split)
         reduce = 1
-        for mesh in _iter_meshes(resampler=resampler, cellsize=cellsize, compensate=False, interlacing=0):
+        for mesh in _iter_meshes(*particles, resampler=resampler, cellsize=cellsize, compensate=False, interlacing=0):
             reduce *= mesh
-        reduce /= mesh.sum()
+        reduce /= reduce.sum()
         distance = jnp.sqrt(sum(xx**2 for xx in mesh.attrs.xcoords(kind='position', sparse=True)))
         reduce *= d2z(distance)
         return reduce.sum()

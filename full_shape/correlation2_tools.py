@@ -30,7 +30,12 @@ def compute_angular_upweights(*get_data):
 
     theta = 10**np.arange(-5, -1 + 0.1, 0.1)  # TODO: update
     battrs = BinAttrs(theta=theta)
-    wattrs = WeightAttrs(bitwise=dict(weights=fibered_data.get('bitwise_weight')))
+    bitwise = None
+    if all_fibered_data[0].get('bitwise_weight'):
+        bitwise = dict(weights=all_fibered_data[0].get('bitwise_weight'))
+        if jax.process_index() == 0:
+            logger.info(f'Applying PIP weights {bitwise}.')
+    wattrs = WeightAttrs(bitwise=bitwise)
 
     def get_counts(*particles):
         #setup_logging('error')
@@ -91,13 +96,20 @@ def compute_particle2_correlation(*get_data_randoms, auw=None, cut=None, battrs=
         battrs = dict(s=np.linspace(0., 180., 181), mu=(np.linspace(-1., 1., 201), 'midpoint'))
 
     battrs = BinAttrs(**battrs)
+    sattrs = None
+    if cut is not None:
+        sattrs = SelectionAttrs(theta=(0., 0.05))
+        if jax.process_index() == 0:
+            logger.info(f'Applying theta-cut {sattrs}.')
     bitwise = angular = None
     if data.get('bitwise_weight'):
         bitwise = dict(weights=data.get('bitwise_weight'))
-    if cut is not None:
-        sattrs = SelectionAttrs(theta=(0., 0.05))
+        if jax.process_index() == 0:
+            logger.info(f'Applying PIP weights {bitwise}.')
     if auw is not None:
         angular = dict(sep=auw.get('DD').coords('theta'), weight=auw.get('DD').value())
+        if jax.process_index() == 0:
+            logger.info(f'Applying AUW {angular}.')
     wattrs = WeightAttrs(bitwise=bitwise, angular=angular)
     mattrs = None  # automatic setting for mesh
 

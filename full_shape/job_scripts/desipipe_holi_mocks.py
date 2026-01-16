@@ -20,11 +20,12 @@ kwargs = {}
 environ = Environment('nersc-cosmodesi') #, command='module swap pyrecon/main pyrecon/mpi')
 #environ = Environment('nersc-cosmodesi')
 tm = TaskManager(queue=queue, environ=environ)
-tm = tm.clone(scheduler=dict(max_workers=1), provider=dict(provider='nersc', time='00:10:00',
+tm = tm.clone(scheduler=dict(max_workers=1), provider=dict(provider='nersc', time='01:00:00',
                             mpiprocs_per_worker=4, output=output, error=error, constraint='gpu'))
+tm80 = tm.clone(provider=dict(provider='nersc', time='01:00:00',
+                            mpiprocs_per_worker=4, output=output, error=error, constraint='gpu&hbm80g'))
 
 
-@tm.python_app
 def run_stats(tracer='LRG', imocks=[451], stats=['mesh2_spectrum']):
     import os
     import sys
@@ -38,23 +39,28 @@ def run_stats(tracer='LRG', imocks=[451], stats=['mesh2_spectrum']):
     os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.9'
     jax.distributed.initialize()
     setup_logging()
-    meas_dir = Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks'
+    meas_dir = Path(os.getenv('SCRATCH')) / 'clustering-measurements-checks_final'
     cache = {}
-    for zrange in tools.propose_fiducial('zranges', tracer):
-        for imock in imocks:
-            for region in ['NGC', 'SGC']:
-                options = dict(catalog=dict(version='holi-v1-altmtl', tracer=tracer, zrange=zrange, region=region, imock=imock), mesh2_spectrum={'cut': True, 'auw': True})
-                options = fill_fiducial_options(**options)
-                compute_fiducial_stats_from_options(stats, get_measurement_fn=functools.partial(tools.get_measurement_fn, meas_dir=meas_dir), cache=cache, **options)
+    zranges = tools.propose_fiducial('zranges', tracer)
+    for imock in imocks:
+        for region in ['NGC', 'SGC']:
+            options = dict(catalog=dict(version='holi-v1-altmtl', tracer=tracer, zrange=zranges, region=region, imock=imock), mesh2_spectrum={'cut': True, 'auw': True})
+            options = fill_fiducial_options(**options)
+            compute_fiducial_stats_from_options(stats, get_measurement_fn=functools.partial(tools.get_measurement_fn, meas_dir=meas_dir), cache=cache, **options)
     jax.distributed.shutdown()
 
 
 
 if __name__ == '__main__':
 
+    mode = 'interactive'
     imocks = 451 + np.arange(250)
     batch_imocks = np.array_split(imocks, len(imocks) // 10)
 
-    for tracer in ['LRG', 'ELG_LOP', 'QSO'][:1]:
-        for imocks in batch_imocks[:4]:
-            run_stats(imocks=imocks, stats=['mesh2_spectrum', 'mesh3_spectrum'])
+    for tracer in ['LRG', 'ELG_LOPnotqso', 'QSO']:
+        for imocks in batch_imocks:
+            if 'interactive' in mode:
+                run_stats(tracer, imocks=imocks, stats=['mesh2_spectrum', 'mesh3_spectrum'])
+            else:
+                _tm = tm if tracer in ['LRG'] else tm80
+                _tm.python_app(run_stats)(tracer, imocks=imocks, stats=['mesh2_spectrum', 'mesh3_spectrum'])
