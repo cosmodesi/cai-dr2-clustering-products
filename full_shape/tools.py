@@ -129,9 +129,56 @@ def select_region(ra, dec, region=None):
     raise ValueError('unknown region {}'.format(region))
 
 
-def compute_fiducial_png_weights(ell, catalog):
+def _make_tuple(item, n=None):
+    if not isinstance(item, (list, tuple)):
+        item = (item,)
+    item = tuple(item)
+    if n is not None:
+        item = item + (item[-1],) * (n - len(item))
+    return item
+
+
+def compute_fiducial_png_weights(ell, catalog, tracer='LRG', p=1.):
     """Return total optimal weights for local PNG analysis."""
-    return catalog['INDWEIGHT'] * factor_png
+
+    def bias(z, tracer='QSO'):
+        """Bias model for the different DESI tracer (measured from DR2 data (loa/v2))."""
+        params = {'BGS_BRIGHT-21.35': (0.60646037, 0.52389492),
+                  'LRG': (0.23553567, 1.3458994),
+                  'ELG_LOPnotqso': (0.15066781, 0.59463735),
+                  'ELGnotqso': (0.15487521, 0.59464828),
+                  'ELG': (0.15487521, 0.59464828),
+                  'QSO': (0.25207547, 0.71020952)}
+        params.update({f'{key}_zcmb': value for key, value in params.items()})
+
+        if tracer in params:
+            alpha, beta = params[tracer]
+        else:
+            raise ValueError(f'Bias for {tracer} is not ready!')
+        return alpha * (1 + z)**2 + beta
+
+    from cosmoprimo.fiducial import DESI
+    from cosmoprimo.utils import Interpolator1D
+
+    cosmo = DESI()
+    zmax, nz = 100., 512
+    zgrid = 1. / jnp.geomspace(1. / (1. + zmax), 1., nz)[::-1] - 1.
+    growth_factor = Interpolator1D(zgrid, cosmo.growth_factor(zgrid), k=3)
+    growth_rate = Interpolator1D(zgrid, cosmo.growth_rate(zgrid), k=3)
+
+    tracers = _make_tuple(tracer, n=2)
+    catalogs = _make_tuple(catalog, n=2)
+    ps = _make_tuple(p, n=2)
+
+    def _get_weights(catalogs, tracers, ps):
+        wtilde = bias(catalogs[0]['Z'], tracer=tracers[0]) - ps[0]
+        w0 = growth_factor(catalogs[0]['Z']) * (bias(catalogs[1]['Z'], tracer=tracers[1]) + growth_rate(catalogs[1]['Z']) / 3)
+        w2 = 2 / 3 * growth_factor(catalogs[1]['Z']) * growth_rate(catalogs[1]['Z'])
+        yield catalogs[0]['INDWEIGHT'] * wtilde, catalogs[1]['INDWEIGHT'] * {0: w0, 2: w2}[ell]
+
+    yield _get_weights(catalogs, tracers, ps)
+    if tracers[1] != tracers[0]:
+        yield _get_weights(catalogs[::-1], tracers[::-1], ps[::-1])
 
 
 def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
@@ -161,6 +208,8 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
         'ELG': {'zranges': [(0.8, 1.1), (1.1, 1.6)], 'nran': 15, 'recon': {'bias': 1.2, 'smoothing_radius': 15., 'zrange': (0.8, 1.6)}},
         'QSO': {'zranges': [(0.8, 2.1)], 'nran': 4, 'recon': {'bias': 2.1, 'smoothing_radius': 30., 'zrange': (0.8, 2.1)}}
     }
+    tracers = _make_tuple(tracer)
+    tracer = join_tracers(tracers)
     tracer = get_simple_tracer(tracer)
     propose_fiducial = base | propose_fiducial[tracer]
     if 'png' in analysis:
@@ -172,7 +221,7 @@ def propose_fiducial(kind, tracer, zrange=None, analysis='full_shape'):
     for stat in ['mesh2_spectrum', 'mesh3_spectrum']:
         propose_fiducial[stat]['mattrs'] = {'meshsize': propose_meshsizes[tracer], 'cellsize': propose_cellsize}
     if 'png' in analysis:
-        propose_fiducial['mesh2_spectrum'].update(ells=(0, 2), optimal_weights=compute_fiducial_png_weights)
+        propose_fiducial['mesh2_spectrum'].update(ells=(0, 2), optimal_weights=functools.partial(compute_fiducial_png_weights, tracer=tracers))
     else:
         propose_fiducial['mesh2_spectrum'].update(ells=(0, 2, 4))
         propose_fiducial['mesh3_spectrum'].update(ells=[(0, 0, 0), (2, 0, 2)], basis='sugiyama-diagonal')
@@ -375,7 +424,7 @@ def checks_if_exists_and_readable(get_fn, test_if_readable=True, **kwargs):
         toret[0].append(fn)
         for name in names: toret[1][name].append(kwargs[name])
         if exc is not None: toret[2].append(exc)
-    
+
     for values in itertools.product(*values):
         fn_kwargs = dict(zip(names, values))
         fn = get_fn(**fn_kwargs)

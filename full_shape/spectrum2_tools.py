@@ -164,21 +164,8 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
     if cache is None: cache = {}
     if edges is None: edges = {'step': 0.001}
 
-    def _compute_spectrum(*all_particles, ells):
+    def _compute_spectrum(all_particles, ells, ifields=None):
         # Compute power spectrum for input given multipoles
-        if optimal_weights is not None:
-            logger.info(f'Applying optimal weights for ell {ells}')
-
-            def _get_optimal_weights(particles):
-                return optimal_weights(ells, {'INDWEIGHT': particles.weights} | {column: particles.__dict__[column] for column in columns_optimal_weights})
-
-            for i, particles in enumerate(all_particles):
-                data, randoms, shifted = particles
-                data = data.clone(weights=_get_optimal_weights(data))
-                randoms = randoms.clone(weights=_get_optimal_weights(randoms))
-                if shifted is not None:
-                    shifted = shifted.clone(weights=_get_optimal_weights(shifted))
-                all_particles[i] = (data, randoms, shifted)
         attrs = _get_jaxpower_attrs(*all_particles)
         mattrs = all_particles[0][0].attrs
 
@@ -196,7 +183,7 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
         # Computing shot noise
         all_fkp = [FKPField(data, shifted if shifted is not None else randoms) for (data, randoms, shifted) in all_particles]
         del all_particles
-        num_shotnoise = compute_fkp2_shotnoise(*all_fkp, bin=bin)
+        num_shotnoise = compute_fkp2_shotnoise(*all_fkp, bin=bin, fields=ifields)
 
         jax.block_until_ready((norm, num_shotnoise))
         if jax.process_index() == 0:
@@ -272,11 +259,31 @@ def compute_mesh2_spectrum(*get_data_randoms, mattrs=None, cut=None, auw=None,
     else:
         results = {}
         for ell in ells:
-            res_ell = _compute_spectrum(*all_particles, ells=ell)
-            for key in res_ell:
-                results.setdefault(key, {})
-                results[key][ell] = res_ell[key]
-        for key in results:
+            logger.info(f'Applying optimal weights for ell {ell}')
+
+            ifields = tuple(range(len(all_particles)))
+            ifields = ifields + (ifields[-1],) * (2 - len(ifields))
+            all_particles = all_particles + (all_particles[-1],) * (2 - len(all_particles))
+
+            def _get_optimal_weights(all_data):
+                if all_data is None: # shifted, yield None
+                    while True:
+                        yield None
+                for all_weights in optimal_weights(ell, [{'INDWEIGHT': data.weights} | {column: data.__dict__[column] for column in columns_optimal_weights} for data in all_data]):
+                    yield tuple(data.clone(weights=weights) for data, weights in zip(all_data, all_weights))
+
+            result_ell = {}
+            for all_data, all_randoms, all_shifted in zip(*[*_get_optimal_weights([particles[i] for particles in all_particles]) for i in range(3)]):
+                # all_data, all_randoms, all_shifted are tuples of ParticleField with optimal weights applied
+                _all_particles = list(zip(all_data, all_randoms, all_shifted))
+                _result = _compute_spectrum(_all_particles, ells=ell, ifields=ifields)
+                for key in result:  # raw, cut, auw
+                    result_ell.setdefault(key, [])
+                    result_ell[key].append(_result[key])
+            for key, value in result_ell.items():  # sum 1<->2
+                result.setdefault(key, [])
+                result[key].append(types.sum(value))
+        for key in results:  # join multipoles
             results[key] = types.join(results[key])
 
     if len(results) == 1:
