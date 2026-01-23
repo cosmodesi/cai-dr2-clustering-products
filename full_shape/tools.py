@@ -714,7 +714,8 @@ def read_clustering_catalog(kind=None, concatenate=True, get_catalog_fn=get_cata
             elif kind == 'randoms':
                 individual_weight = catalog['WEIGHT'] * get_binned_weight(catalog, binned_weight['missing_power'])
         if 'FKP' in weight_type.upper():
-            individual_weight *= catalog['WEIGHT_FKP']
+            #individual_weight *= catalog['WEIGHT_FKP']
+            individual_weight *= 1/(1+catalog['NX']*P0) #need to pass P0 as new keyword argument
         if 'comp' in weight_type:
             individual_weight *= get_binned_weight(catalog, binned_weight['completeness'])
         catalog = catalog[['RA', 'DEC', 'Z', 'NX', 'TARGETID']]
