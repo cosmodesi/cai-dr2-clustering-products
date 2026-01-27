@@ -347,9 +347,8 @@ def main(**kwargs):
         jax.distributed.initialize()
 
     setup_logging()
-    tracer = args.tracer
     if args.zrange is None:
-        zranges = tools.propose_fiducial('zranges', tracer=tools.join_tracers(tracer), analysis=args.analysis)
+        zranges = tools.propose_fiducial('zranges', tracer=tools.join_tracers(args.tracer), analysis=args.analysis)
     else:
         assert len(args.zrange) % 2 == 0
         zranges = list(zip(args.zrange[::2], args.zrange[1::2]))
