@@ -1,6 +1,6 @@
-# cai-dr2-clustering products
+# desi-clustering
 
-Collection of scripts to produce the DESI DR2 clustering measurements.
+Collection of scripts to produce the DESI DR2 clustering measurements from the data / mocks catalogs to the parameter inferences.
 
 
 ## 📦 Installation
@@ -8,14 +8,14 @@ Collection of scripts to produce the DESI DR2 clustering measurements.
 You can install the latest version directly from the GitHub repository:
 
 ```bash
-pip install git+https://github.com/cosmodesi/dr2-clustering-analysis.git
+pip install git+https://github.com/cosmodesi/desi-clustering.git
 ```
 
 Alternatively, if you plan to contribute or modify the code, install in editable (development) mode:
 
 ```bash
-git clone https://github.com/cosmodesi/dr2-clustering-analysis.git
-cd dr2-clustering-analysis
+git clone https://github.com/cosmodesi/desi-clustering.git
+cd desi-clustering
 pip install -e .
 ```
 In both cases, to compute (fiducial) clustering statistics you can run the command:
