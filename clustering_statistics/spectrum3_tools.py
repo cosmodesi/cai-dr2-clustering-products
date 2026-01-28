@@ -206,3 +206,122 @@ def compute_window_mesh3_spectrum(*get_data_randoms, spectrum, ibatch: tuple=Non
         window = window.clone(observable=observable, value=window.value() / (norm[..., None] / np.mean(norm)))  # just in case norm is k-dependent
         results['raw'] = window
     return results
+
+
+def compute_box_mesh3_spectrum(get_data, get_shifted=None, basis='scoccimarro', ells=[0, 2], los='z', mask_edges=None, cache=None, **attrs):
+    """
+    Compute the 3-point spectrum multipoles for a cubic box using :mod:`jaxpower`.
+
+    Parameters
+    ----------
+    get_data : callable
+        Function that returns a tuple of (positions, weights) for the data catalog.
+    get_shifted : callable, optional
+        Function that returns a tuple of (positions, weights) for shifted randoms.
+        If None, no shifted randoms are used.
+    basis : str, optional
+        Basis for the 3-point spectrum computation. Default is 'scoccimarro'.
+        Can also be 'sugiyama-diagonal' or other supported bases.
+    ells : list, optional
+        Multipole moments to compute. Default is [0, 2].
+        For scoccimarro basis, use integer ells. For sugiyama basis, use tuples like [(0, 0, 0), (2, 0, 2)].
+    los : {'x', 'y', 'z'}, optional
+        Line-of-sight direction. Default is 'z'.
+    mask_edges : str or None, optional
+        Edge masking specification. Default is None.
+    cache : dict, optional
+        Cache to store binning class (can be reused if ``meshsize`` and ``boxsize`` are the same).
+        If ``None``, a new cache is created.
+    **attrs : dict
+        Mesh attributes (boxsize, cellsize, etc.) to pass to :func:`jaxpower.get_mesh_attrs`.
+
+    Returns
+    -------
+    spectrum : Mesh3SpectrumPoles
+        The computed 3-point spectrum multipoles.
+    """
+    import jax
+    from jaxpower import (ParticleField, FKPField, compute_box3_normalization, compute_fkp3_shotnoise, BinMesh3SpectrumPoles, get_mesh_attrs, compute_mesh3_spectrum)
+    mattrs = get_mesh_attrs(boxcenter=0., **attrs)
+    data = ParticleField(*get_data(), attrs=mattrs, exchange=True, backend='jax')
+    edges = {'step': 0.01 if 'scoccimarro' in basis else 0.005}
+    if cache is None: cache = {}
+    bin = cache.get(f'bin_mesh3_spectrum_{basis}', None)
+    if bin is None: bin = BinMesh3SpectrumPoles(mattrs, edges=edges, basis=basis, ells=ells, buffer_size=16, mask_edges=mask_edges)
+    cache.setdefault(f'bin_mesh3_spectrum_{basis}', bin)
+    norm = compute_box3_normalization(data, bin=bin)
+    if get_shifted is not None:
+        data = FKPField(data, ParticleField(*get_shifted(), attrs=mattrs, exchange=True, backend='jax'))
+    kw = dict(resampler='tsc', interlacing=3, compensate=True)
+    num_shotnoise = compute_fkp3_shotnoise(data, los=los, bin=bin, **kw)
+    jax.block_until_ready((norm, num_shotnoise))
+    if jax.process_index() == 0:
+        logger.info('Normalization and shotnoise computation finished')
+    mesh = data.paint(**kw, out='real')
+    mesh = mesh - mesh.mean()
+    spectrum = compute_mesh3_spectrum(mesh, los=los, bin=bin)
+    spectrum = spectrum.clone(norm=norm, num_shotnoise=num_shotnoise)
+    jax.block_until_ready(spectrum)
+    if jax.process_index() == 0:
+        logger.info('Mesh-based computation finished')
+    return spectrum
+
+
+def compute_box_mesh3_cross_spectrum(get_data, get_data2, basis='scoccimarro', ells=[0, 2], los='z', mask_edges=None, cache=None, **attrs):
+    """
+    Compute the 3-point cross-spectrum multipoles between two fields in a cubic box using :mod:`jaxpower`.
+
+    Parameters
+    ----------
+    get_data : callable
+        Function that returns a tuple of (positions, weights) for the first data catalog.
+    get_data2 : callable
+        Function that returns a tuple of (positions, weights) for the second data catalog.
+    basis : str, optional
+        Basis for the 3-point spectrum computation. Default is 'scoccimarro'.
+        Can also be 'sugiyama-diagonal' or other supported bases.
+    ells : list, optional
+        Multipole moments to compute. Default is [0, 2].
+        For scoccimarro basis, use integer ells. For sugiyama basis, use tuples like [(0, 0, 0), (2, 0, 2)].
+    los : {'x', 'y', 'z'}, optional
+        Line-of-sight direction. Default is 'z'.
+    mask_edges : str or None, optional
+        Edge masking specification. Default is None.
+    cache : dict, optional
+        Cache to store binning class (can be reused if ``meshsize`` and ``boxsize`` are the same).
+        If ``None``, a new cache is created.
+    **attrs : dict
+        Mesh attributes (boxsize, cellsize, etc.) to pass to :func:`jaxpower.get_mesh_attrs`.
+
+    Returns
+    -------
+    spectrum : Mesh3SpectrumPoles
+        The computed 3-point cross-spectrum multipoles.
+    """
+    import jax
+    from jaxpower import (ParticleField, compute_box3_normalization, BinMesh3SpectrumPoles, get_mesh_attrs, compute_mesh3_spectrum)
+    mattrs = get_mesh_attrs(boxcenter=0., **attrs)
+    data = ParticleField(*get_data(), attrs=mattrs, exchange=True, backend='jax')
+    data2 = ParticleField(*get_data2(), attrs=mattrs, exchange=True, backend='jax')
+    edges = {'step': 0.01 if 'scoccimarro' in basis else 0.005}
+    if cache is None: cache = {}
+    bin = cache.get(f'bin_mesh3_spectrum_{basis}', None)
+    if bin is None: bin = BinMesh3SpectrumPoles(mattrs, edges=edges, basis=basis, ells=ells, buffer_size=16, mask_edges=mask_edges)
+    cache.setdefault(f'bin_mesh3_spectrum_{basis}', bin)
+    norm = compute_box3_normalization(data, data2, bin=bin)
+    jax.block_until_ready(norm)
+    if jax.process_index() == 0:
+        logger.info('Normalization and shotnoise computation finished')
+    kw = dict(resampler='tsc', interlacing=3, compensate=True)
+    mesh = data.paint(**kw, out='real')
+    mesh = mesh - mesh.mean()
+    del data
+    mesh2 = data2.paint(**kw, out='real')
+    mesh2 = mesh2 - mesh2.mean()
+    del data2
+    spectrum = compute_mesh3_spectrum(mesh, mesh2, los=los, bin=bin)
+    spectrum = spectrum.clone(norm=norm)
+    jax.block_until_ready(spectrum)
+    if jax.process_index() == 0:
+        logger.info('Mesh-based computation finished')
+    return spectrum

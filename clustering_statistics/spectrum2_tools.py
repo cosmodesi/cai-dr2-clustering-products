@@ -430,3 +430,114 @@ def compute_window_mesh2_spectrum(*get_data_randoms, spectrum, optimal_weights=N
             results[key] = results[key[0]].clone(value=value, observable=observable)  # join multipoles
 
     return results
+
+
+def compute_box_mesh2_spectrum(get_data, get_shifted=None, ells=(0, 2, 4), los='z', cache=None, **attrs):
+    """
+    Compute the 2-point spectrum multipoles for a cubic box using :mod:`jaxpower`.
+
+    Parameters
+    ----------
+    get_data : callable
+        Function that returns a tuple of (positions, weights) for the data catalog.
+    get_shifted : callable, optional
+        Function that returns a tuple of (positions, weights) for shifted randoms.
+        If None, no shifted randoms are used.
+    ells : tuple of int, optional
+        Multipole moments to compute. Default is (0, 2, 4).
+    los : {'x', 'y', 'z'}, optional
+        Line-of-sight direction. Default is 'z'.
+    cache : dict, optional
+        Cache to store binning class (can be reused if ``meshsize`` and ``boxsize`` are the same).
+        If ``None``, a new cache is created.
+    **attrs : dict
+        Mesh attributes (boxsize, cellsize, etc.) to pass to :func:`jaxpower.get_mesh_attrs`.
+
+    Returns
+    -------
+    spectrum : Mesh2SpectrumPoles
+        The computed 2-point spectrum multipoles.
+    """
+    import jax
+    from jaxpower import (ParticleField, FKPField, compute_box2_normalization, compute_fkp2_shotnoise, BinMesh2SpectrumPoles, get_mesh_attrs, compute_mesh2_spectrum)
+    mattrs = get_mesh_attrs(boxcenter=0., **attrs)
+    data = ParticleField(*get_data(), attrs=mattrs, exchange=True, backend='jax')
+    if cache is None: cache = {}
+    bin = cache.get('bin_mesh2_spectrum', None)
+    if bin is None: bin = BinMesh2SpectrumPoles(mattrs, edges={'step': 0.001}, ells=ells)
+    cache.setdefault('bin_mesh2_spectrum', bin)
+    norm = compute_box2_normalization(data, bin=bin)
+    wsum_data1 = data.sum()
+    if get_shifted is not None:
+        data = FKPField(data, ParticleField(*get_shifted(), attrs=mattrs, exchange=True, backend='jax'))
+    num_shotnoise = compute_fkp2_shotnoise(data, bin=bin)
+    jax.block_until_ready((norm, num_shotnoise))
+    if jax.process_index() == 0:
+        logger.info('Normalization and shotnoise computation finished')
+    mesh = data.paint(resampler='tsc', interlacing=3, compensate=True, out='real')
+    mesh = mesh - mesh.mean()
+    del data
+    jitted_compute_mesh2_spectrum = jax.jit(compute_mesh2_spectrum, static_argnames=['los'], donate_argnums=[0])
+    spectrum = jitted_compute_mesh2_spectrum(mesh, bin=bin, los=los).clone(norm=norm, num_shotnoise=num_shotnoise)
+    mattrs = {name: mattrs[name] for name in ['boxsize', 'boxcenter', 'meshsize']}
+    spectrum = spectrum.clone(attrs=dict(los=los, wsum_data1=wsum_data1, **mattrs))
+    jax.block_until_ready(spectrum)
+    if jax.process_index() == 0:
+        logger.info('Mesh-based computation finished')
+    return spectrum
+
+
+def compute_box_mesh2_cross_spectrum(get_data, get_data2, ells=(0, 2, 4), los='z', cache=None, **attrs):
+    """
+    Compute the 2-point cross-spectrum multipoles between two fields in a cubic box using :mod:`jaxpower`.
+
+    Parameters
+    ----------
+    get_data : callable
+        Function that returns a tuple of (positions, weights) for the first data catalog.
+    get_data2 : callable
+        Function that returns a tuple of (positions, weights) for the second data catalog.
+    ells : tuple of int, optional
+        Multipole moments to compute. Default is (0, 2, 4).
+    los : {'x', 'y', 'z'}, optional
+        Line-of-sight direction. Default is 'z'.
+    cache : dict, optional
+        Cache to store binning class (can be reused if ``meshsize`` and ``boxsize`` are the same).
+        If ``None``, a new cache is created.
+    **attrs : dict
+        Mesh attributes (boxsize, cellsize, etc.) to pass to :func:`jaxpower.get_mesh_attrs`.
+
+    Returns
+    -------
+    spectrum : Mesh2SpectrumPoles
+        The computed 2-point cross-spectrum multipoles.
+    """
+    import jax
+    from jaxpower import (ParticleField, compute_box2_normalization, BinMesh2SpectrumPoles, get_mesh_attrs, compute_mesh2_spectrum)
+    mattrs = get_mesh_attrs(boxcenter=0., **attrs)
+    if cache is None: cache = {}
+    bin = cache.get('bin_mesh2_spectrum', None)
+    if bin is None: bin = BinMesh2SpectrumPoles(mattrs, edges={'step': 0.001}, ells=ells)
+    cache.setdefault('bin_mesh2_spectrum', bin)
+    data = ParticleField(*get_data(), attrs=mattrs, exchange=True, backend='jax')
+    kw = {}
+    kw['wsum_data1'] = data.sum()
+    data2 = ParticleField(*get_data2(), attrs=mattrs, exchange=True, backend='jax')
+    kw['wsum_data2'] = data2.sum()
+    norm = compute_box2_normalization(data, data2, bin=bin)
+    jax.block_until_ready(norm)
+    if jax.process_index() == 0:
+        logger.info('Normalization computation finished')
+    mesh = data.paint(resampler='tsc', interlacing=3, compensate=True, out='real')
+    mesh = mesh - mesh.mean()
+    del data
+    mesh2 = data2.paint(resampler='tsc', interlacing=3, compensate=True, out='real')
+    mesh2 = mesh2 - mesh2.mean()
+    del data2
+    jitted_compute_mesh2_spectrum = jax.jit(compute_mesh2_spectrum, static_argnames=['los'], donate_argnums=[0])
+    spectrum = jitted_compute_mesh2_spectrum(mesh, mesh2, bin=bin, los=los).clone(norm=norm)
+    mattrs = {name: mattrs[name] for name in ['boxsize', 'boxcenter', 'meshsize']}
+    spectrum = spectrum.clone(attrs=dict(los=los, **kw, **mattrs))
+    jax.block_until_ready(spectrum)
+    if jax.process_index() == 0:
+        logger.info('Mesh-based computation finished')
