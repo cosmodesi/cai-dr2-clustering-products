@@ -60,6 +60,42 @@ def get_simple_tracer(tracer):
         raise NotImplementedError(f'tracer {tracer} is unknown')
 
 
+def get_lensing_options(sample):
+    # get options for different lensing maps based on given sample (str)
+    # following https://github.com/cosmodesi/DESI_Y3_x_CMB/tree/28bf7661a6ed02f81397d5db93d87344cd47d0d2/configs
+    options = {'healpix_nside': 2048}
+    if sample == 'act_dr6':
+        base_dir = "/dvs_ro/cfs/projectdirs/act/www/dr6_lensing_v1/"
+        options['file'] = os.path.join(base_dir,'maps/baseline/mask_act_dr6_lensing_v1_healpix_nside_4096_baseline.fits')
+        options['is_cmb_mask'] = True
+        options['galactic_coordinates'] = False
+        return options   
+    if sample == 'planck_pr4':
+        base_dir = "/dvs_ro/cfs/cdirs/cmb/data/planck2020/PR4_lensing/"
+        options['file'] = os.path.join(base_dir, "mask.fits.gz")
+        options['is_cmb_mask'] = False
+        options['galactic_coordinates'] = True
+        return options
+    raise ValueError('unknown lensing sample {}'.format(sample))
+
+    
+def get_lensing_footprint(sample, threshold=0.1):
+    # https://github.com/cosmodesi/DESI_Y3_x_CMB/blob/28bf7661a6ed02f81397d5db93d87344cd47d0d2/DESI_Y3_x_CMB/auxiliary/config_utils.py#L59
+    import healpy as hp
+    lensing_options = get_lensing_options(sample)
+    mask_path = lensing_options['file']
+    lensing_mask = hp.ud_grade(hp.read_map(mask_path, dtype=np.float32), lensing_options['healpix_nside']) # This is slow
+    if lensing_options['is_cmb_mask']:
+        lensing_mask *= lensing_mask
+    
+    uses_galactic_coords = lensing_options["galactic_coordinates"]
+    if uses_galactic_coords:
+        rotator = hp.Rotator(coord=['G','C'])
+        lensing_mask = rotator.rotate_map_pixel(lensing_mask)
+    lensing_mask = hp.reorder(lensing_mask,r2n=True)
+    return lensing_mask > threshold
+
+    
 def select_region(ra, dec, region=None):
     """
     Return mask of corresponding R.A./Dec. region.
@@ -84,6 +120,8 @@ def select_region(ra, dec, region=None):
         - 'SnoDES': Southern region excluding DES footprint
         - 'SSGCnoDES': Southern part of SGC excluding DES footprint
         - 'SGCnoDES': SGC excluding DES footprint
+        - 'ACT_DR6': ACT DR6 footprint
+        = 'PLANCK_PR4': Planck PR4 footprint
 
     Returns
     -------
@@ -94,6 +132,8 @@ def select_region(ra, dec, region=None):
     # print('select', region)
     if region in [None, 'ALL', 'GCcomb']:
         return np.ones_like(ra, dtype='?')
+    
+    # North, South, SGC, and NGC footprints
     mask_ngc = (ra > 100 - dec)
     mask_ngc &= (ra < 280 + dec)
     mask_n = mask_ngc & (dec > 32.375)
@@ -114,8 +154,10 @@ def select_region(ra, dec, region=None):
         return mask_ngc & (~mask_n)
     # if region == 'GCcomb_noNorth':
     #     return ~mask_n
+    
+    # DES footprint 
     north, south, des = load_footprint().get_imaging_surveys()
-    mask_des = des[hp.ang2pix(256, ra, dec, nest=True, lonlat=True)]
+    mask_des = des[hp.ang2pix(hp.get_nside(des), ra, dec, nest=True, lonlat=True)]
     if region == 'DES':
         return mask_des
     if region == 'SnoDES':
@@ -126,6 +168,16 @@ def select_region(ra, dec, region=None):
         return (~mask_ngc) & (~mask_des)
     # if region == 'GCcomb_noDES':
     #     return ~mask_des
+    
+    # Other footprints
+    act = get_lensing_footprint(region.lower())
+    mask_act = act[hp.ang2pix(hp.get_nside(act), ra, dec, nest=True, lonlat=True)]
+    if region == 'ACT_DR6': 
+        return mask_act    
+    planck = get_lensing_footprint(region.lower())
+    mask_planck = planck[hp.ang2pix(hp.get_nside(planck), ra, dec, nest=True, lonlat=True)]
+    if region == 'PLANCK_PR4': 
+        return mask_planck
     raise ValueError('unknown region {}'.format(region))
 
 
